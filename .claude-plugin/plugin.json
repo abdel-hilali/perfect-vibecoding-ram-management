@@ -1,0 +1,26 @@
+{
+  "name": "perfect-vibecoding-ram-management",
+  "displayName": "Perfect vibe-coding RAM management",
+  "description": "Keeps a developer PC from freezing when AI agents, builds and tests share its memory: a machine-wide queue that runs heavy jobs one by one under memory caps, a watchdog that stops the newest AI-started job before the memory runs out, and hooks that refuse new agents and unqueued heavy commands when memory is low. Linux fully, macOS without caps.",
+  "author": {
+    "name": "abdel-hilali"
+  },
+  "homepage": "https://github.com/abdel-hilali/perfect-vibecoding-ram-management",
+  "repository": "https://github.com/abdel-hilali/perfect-vibecoding-ram-management",
+  "license": "MIT",
+  "keywords": ["ram", "memory", "oom", "freeze", "watchdog", "queue", "hooks", "multi-agent", "flutter", "nextjs", "gradle"],
+  "userConfig": {
+    "watchdog": {
+      "type": "boolean",
+      "title": "Start the RAM watchdog with each session",
+      "description": "At each session start, start the watchdog if it is not running. It is one small bash process that reads the memory every 2 seconds and keeps running after the session ends.",
+      "default": true
+    },
+    "stop_jobs": {
+      "type": "boolean",
+      "title": "Let the watchdog stop AI-started jobs when memory is critical",
+      "description": "When off, the watchdog only logs and warns. Applies to a watchdog that this plugin starts; one that already runs keeps its setting.",
+      "default": true
+    }
+  }
+}

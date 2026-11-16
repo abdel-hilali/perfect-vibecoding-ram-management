@@ -102,6 +102,7 @@ read_psi() {
 read_mem
 T=$MEM_TOTAL_MB
 max2() { if [ "$1" -gt "$2" ]; then echo "$1"; else echo "$2"; fi; }
+min2() { if [ "$1" -lt "$2" ]; then echo "$1"; else echo "$2"; fi; }
 
 # ---------------------------------------------------------------- settings (defaults scale with the RAM)
 
@@ -233,10 +234,14 @@ usage_run() {
   exit 2
 }
 
+# flutter drive and an integration_test run build the app with Gradle or Xcode first: they need a build's cap.
+# A tool may call Flutter by its full path: /opt/flutter/bin/flutter build apk.
 is_build() {
   case " $* " in
-    *" flutter build "* | *gradlew* | *" gradle "* | *" assemble"* | *" bundle"* | *xcodebuild* | *" next build "* | \
-      *" run build "* | *" pnpm build "* | *" yarn build "* | *" bun run build "* | *" docker build "* | *" podman build "*) return 0 ;;
+    *" flutter build "* | *" flutter drive "* | *" flutter test "*integration_test* | *gradlew* | *" gradle "* | \
+      *"/flutter build "* | *"/flutter drive "* | *"/flutter test "*integration_test* | \
+      *" assemble"* | *" bundle"* | *xcodebuild* | *" next build "* | *" run build "* | *" pnpm build "* | \
+      *" yarn build "* | *" bun run build "* | *" docker build "* | *" podman build "*) return 0 ;;
   esac
   return 1
 }
@@ -299,7 +304,15 @@ cmd_run() {
   if is_build "$@"; then
     alone=1
     [ -n "$cap" ] || cap=$RAM_BUILD_MAX_MB
-    [ -n "$need" ] || need=$(max2 "$RAM_HEAVY_MIN_MB" 4000)
+    # A build wants 4 GB free. A machine that cannot free that much when idle (the RAM less the reserve) would
+    # wait the whole RAM_WAIT_S and give up every time: there a build waits for what the machine can free.
+    if [ -z "$need" ]; then
+      need=$(max2 "$RAM_HEAVY_MIN_MB" "$(min2 4000 $((T - RAM_RESERVE_MB)))")
+      if [ "$need" -lt 4000 ]; then
+        echo "ram: this machine has $(mb "$T") of RAM, so a build waits for $(mb "$need") free, not 4 GB." \
+          "A Flutter build on a machine this small may freeze it" >&2
+      fi
+    fi
   fi
   [ -n "$cap" ] || cap=$RAM_JOB_MAX_MB
   [ -n "$need" ] || need=$RAM_HEAVY_MIN_MB
@@ -403,10 +416,14 @@ cmd_run() {
     # oom_score_adj 1000: if the kernel must kill something anyway, it kills this job first, never the desktop.
     # Started in the background and waited for, with stdin passed on: bash then prints no long "Killed" line,
     # and a stop signal for ram.sh reaches run_abort at once.
+    # systemd 254 and later expand $VAR and $$ in the command themselves: bash -c 'for f in *; do echo "$f"; done'
+    # would lose "$f". The job must get its command as it was typed.
+    local -a noexp=()
+    if systemd-run --help 2>/dev/null | grep -q -- '--expand-environment'; then noexp=(--expand-environment=no); fi
     # The job gets none of the lock fds: a daemon it starts (Gradle, Kotlin) would hold a slot for hours.
     (
       close_slot_fds
-      exec systemd-run --user --scope --quiet --collect --unit="$unit" \
+      exec systemd-run --user --scope --quiet --collect ${noexp[@]+"${noexp[@]}"} --unit="$unit" \
         -p MemoryMax="${cap}M" -p MemorySwapMax="${RAM_JOB_SWAP_MB}M" -- \
         bash -c 'echo 1000 >/proc/self/oom_score_adj 2>/dev/null; exec "$@"' ram-job ${tmo[@]+"${tmo[@]}"} "$@"
     ) <&0 8>&- 9>&- &
@@ -433,6 +450,10 @@ cmd_run() {
     echo "ram: '$label' was stopped by the RAM watchdog: the machine ran out of memory (ram.sh last tells what used it)" >&2
   elif [ "${ooms:-0}" -gt 0 ]; then
     echo "ram: '$label' went over its cap of $(mb "$cap"), so the kernel stopped part of it. Use less memory (fewer workers, a smaller heap), or a bigger --max only if the machine has room" >&2
+  elif [ "$code" = 137 ] && [ "$scope" = 1 ] && { [ "$timeout_s" = 0 ] || [ $((SECONDS - t0)) -lt "$timeout_s" ]; }; then
+    # A job that jumps past its cap between two samples leaves no kill count behind, and here nothing else sends
+    # SIGKILL (the watchdog logs its stops; --timeout ends later): say what most likely happened.
+    echo "ram: '$label' was killed (SIGKILL), most likely at its cap of $(mb "$cap"). Use less memory (fewer workers, a smaller heap), or a bigger --max only if the machine has room" >&2
   fi
   echo "ram: '$label' exit $code ($mins min${peak:+, peak $(mb "$peak")})" >&2
   return "$code"
@@ -901,12 +922,27 @@ cmd_doctor() {
       bak="$gp.bak-$(date +%Y%m%d-%H%M%S)"
       cp "$gp" "$bak"
       # Lower only what is too big: a smaller heap or metaspace the owner chose stays as it is.
-      local newjvm=${jvm:--Xmx3g}
-      if [ "$xmx_mb" -gt 3072 ]; then newjvm=$(printf '%s' "$newjvm" | sed -E 's/-Xmx[0-9]+[gGmM]/-Xmx3g/g'); fi
+      local newjvm=${jvm:--Xmx3g} newxmx=0
+      if [ "$xmx_mb" -gt 3072 ]; then
+        newjvm=$(printf '%s' "$newjvm" | sed -E 's/-Xmx[0-9]+[gGmM]/-Xmx3g/g')
+        newxmx=1
+      fi
       if [ "$meta_mb" -gt 1024 ]; then
         newjvm=$(printf '%s' "$newjvm" | sed -E 's/-XX:MaxMetaspaceSize=[0-9]+[gGmM]/-XX:MaxMetaspaceSize=1g/g')
       fi
-      case $newjvm in *-Xmx*) ;; *) newjvm="-Xmx3g $newjvm" ;; esac
+      case $newjvm in *-Xmx*) ;; *) newjvm="-Xmx3g $newjvm"; newxmx=1 ;; esac
+      # A JVM whose -Xms is bigger than its -Xmx does not start: a new -Xmx3g brings a bigger -Xms down with it.
+      if [ "$newxmx" = 1 ]; then
+        newjvm=$(printf '%s' "$newjvm" | awk '{
+          out = ""; s = $0
+          while (match(s, /-Xms[0-9]+[gGmM]/)) {
+            m = substr(s, RSTART, RLENGTH)
+            v = substr(m, 5, length(m) - 5) * (m ~ /[gG]$/ ? 1024 : 1)
+            out = out substr(s, 1, RSTART - 1) (v > 3072 ? "-Xms3g" : m)
+            s = substr(s, RSTART + RLENGTH)
+          }
+          print out s }')
+      fi
       awk -v j="$newjvm" '
         /^[[:space:]]*org\.gradle\.jvmargs[[:space:]]*=/ { if (!d) print "org.gradle.jvmargs=" j; d = 1; next }
         { print }

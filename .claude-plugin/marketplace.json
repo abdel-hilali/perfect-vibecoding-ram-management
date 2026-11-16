@@ -1,0 +1,16 @@
+{
+  "name": "perfect-vibecoding-ram-management",
+  "owner": {
+    "name": "abdel-hilali"
+  },
+  "description": "One plugin: a memory queue, a watchdog and hooks that keep a PC from freezing while AI agents, builds and tests share its RAM.",
+  "plugins": [
+    {
+      "name": "perfect-vibecoding-ram-management",
+      "source": "./",
+      "description": "Machine-wide queue with memory caps, a RAM watchdog, and hooks that refuse new agents and unqueued heavy commands when memory is low.",
+      "category": "development",
+      "tags": ["ram", "memory", "watchdog", "queue", "hooks"]
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "description": "Starts the RAM watchdog with each session, refuses a new agent when memory is low and an unqueued heavy command when memory is low or a queued job runs, and tells Claude when the watchdog stopped a job.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/ram-hook.mjs", "session-start"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/ram-hook.mjs", "pre-agent"],
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/ram-hook.mjs", "pre-bash"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

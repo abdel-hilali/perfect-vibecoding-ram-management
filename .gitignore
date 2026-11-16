@@ -1,0 +1,7 @@
+# Working files and OS or editor noise.
+runs/
+node_modules/
+.DS_Store
+Thumbs.db
+*.swp
+*~
